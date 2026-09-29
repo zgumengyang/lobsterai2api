@@ -12,10 +12,16 @@ import (
 
 // Config 顶层配置。
 type Config struct {
-	Listen    string `json:"listen"`     // ":8367"
-	APIKey    string `json:"api_key"`    // 空 = 不鉴权
-	AuthDir   string `json:"auth_dir"`   // ./auths
-	StateFile string `json:"state_file"` // ./data/state.json
+	Listen    string   `json:"listen"`     // ":8367"
+	APIKey    string   `json:"api_key"`    // 单 key（旧字段，兼容保留）；空 = 不鉴权
+	APIKeys   []string `json:"api_keys"`   // 多 key 列表（全部有效）；与 api_key 合并
+	AuthDir   string   `json:"auth_dir"`   // ./auths
+	StateFile string   `json:"state_file"` // ./data/state.json
+	// MaxRotate 单请求最多换号次数（默认 3）。
+	// 2026-09-22 实测验出来的必要性：模型访问权限是**按账号**算的
+	// （同一个 qwen3.8-flash，7 个号里有几个能出内容、几个回 40301），
+	// 所以池子越大、每个模型可用的号越多，这个值就该大一点，一次请求多试几个号。
+	MaxRotate int `json:"max_rotate"`
 
 	Cooldown struct {
 		HardCredit  string `json:"hard_credit"`   // "12h"
@@ -49,8 +55,8 @@ func Default() *Config {
 	}
 	c.Cooldown.HardCredit = "12h"
 	c.Cooldown.SoftRate = "60s"
-	c.Cooldown.ErrThresh = 3
-	c.Cooldown.ErrCooldown = "10m"
+	c.Cooldown.ErrThresh = 5
+	c.Cooldown.ErrCooldown = "3m"
 	c.Schedule.CheckinHours = []int{9, 21}
 	c.Schedule.KeepaliveHours = []int{22}
 	c.Upstream.TimeoutSeconds = 180
@@ -74,6 +80,23 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 	return c, nil
+}
+
+// AllKeys 返回生效的全部 API Key（api_keys 数组 + 旧 api_key 字段合并去重）。
+func (c *Config) AllKeys() []string {
+	seen := map[string]bool{}
+	out := []string{}
+	for _, k := range c.APIKeys {
+		k = strings.TrimSpace(k)
+		if k != "" && !seen[k] {
+			seen[k] = true
+			out = append(out, k)
+		}
+	}
+	if k := strings.TrimSpace(c.APIKey); k != "" && !seen[k] {
+		out = append(out, k)
+	}
+	return out
 }
 
 func applyEnv(c *Config) {
@@ -122,7 +145,7 @@ func (c *Config) normalize() error {
 		return fmt.Errorf("cooldown.err_cooldown: %w", err)
 	}
 	if c.Cooldown.ErrThresh <= 0 {
-		c.Cooldown.ErrThresh = 3
+		c.Cooldown.ErrThresh = 5
 	}
 	if c.Upstream.TimeoutSeconds <= 0 {
 		c.Upstream.TimeoutSeconds = 180

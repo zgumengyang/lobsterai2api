@@ -24,3 +24,22 @@ data/
 # OS
 .DS_Store
 Thumbs.db
+
+# ---- 2026-09-29 补：工作记录 / 本地脚本 / 证书 / 二进制，一律不上传 ----
+HANDOFF.md
+HANDOFF.md.*
+*.pre-*
+*.bak-*
+smoke/
+lab/
+cert/
+bin/
+logs/
+backups/
+*.log
+.panel-cookie
+dnspod.env.json
+*.pem
+*.key
+*.db
+*.jsonl

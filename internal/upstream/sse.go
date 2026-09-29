@@ -192,7 +192,14 @@ func sortInts(a []int) {
 
 // Stream 透传上游 SSE 到 w（每行 flush），保证至少写一个 [DONE]。
 // 调用方必须先设置过 status 200；本函数自设 SSE headers。
-func Stream(w http.ResponseWriter, r io.Reader) error {
+// 返回流中携带的 usage（若上游在末尾 chunk 提供），供调用方累计统计。
+// Stream 把上游 SSE 原样（但过一遍额度/推广文案屏蔽）转发给客户端。
+//
+// 返回值 quota：这一条流里**出现过**"额度用完"类文案（被换成中立事件的那次）。
+// 调用方拿到 true 就必须给这个账号上硬冷却 —— 流已经开了，本单救不回来，
+// 但下一单绝不能再选中它（2026-09-22：Tier 停用、只走池子时用户反复看到"正在重新连接"，
+// 根因就是死号顶着一个过期的积分值一直被选）。
+func Stream(w http.ResponseWriter, r io.Reader) (usage map[string]any, quota bool, err error) {
 	h := w.Header()
 	h.Set("Content-Type", "text/event-stream")
 	h.Set("Cache-Control", "no-cache")
@@ -205,12 +212,27 @@ func Stream(w http.ResponseWriter, r io.Reader) error {
 		line, err := br.ReadString('\n')
 		if line != "" {
 			trimmed := strings.TrimRight(line, "\r\n")
-			if strings.HasPrefix(trimmed, "data:") &&
-				strings.TrimSpace(strings.TrimPrefix(trimmed, "data:")) == "[DONE]" {
-				sawDone = true
+			if strings.HasPrefix(trimmed, "data:") {
+				payload := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
+				if payload == "[DONE]" {
+					sawDone = true
+				} else {
+					// 顺带解析 usage（不阻塞转发；解析失败忽略）
+					var chunk map[string]any
+					if json.Unmarshal([]byte(payload), &chunk) == nil {
+						if u, ok := chunk["usage"].(map[string]any); ok && u != nil {
+							usage = u
+						}
+					}
+				}
 			}
-			if _, werr := io.WriteString(w, line); werr != nil {
-				return werr
+			// 流式也要挡上游的额度/推广文案；被换掉的行 = 这个号中途没额度了
+			san := SanitizeSSELine(line)
+			if san != line {
+				quota = true
+			}
+			if _, werr := io.WriteString(w, san); werr != nil {
+				return usage, quota, werr
 			}
 			if fl != nil {
 				fl.Flush()
@@ -220,16 +242,16 @@ func Stream(w http.ResponseWriter, r io.Reader) error {
 			if err == io.EOF {
 				break
 			}
-			return err
+			return usage, quota, err
 		}
 	}
 	if !sawDone {
 		if _, err := io.WriteString(w, "data: [DONE]\n\n"); err != nil {
-			return err
+			return usage, quota, err
 		}
 		if fl != nil {
 			fl.Flush()
 		}
 	}
-	return nil
+	return usage, quota, nil
 }
